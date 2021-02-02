@@ -3,10 +3,10 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
-import org.rocksdb.*;
-
 import java.util.ArrayList;
 import java.util.List;
+import org.rocksdb.*;
+import org.rocksdb.util.SizeUnit;
 
 public class RocksDBColumnFamilySample {
   static {
@@ -36,15 +36,15 @@ public class RocksDBColumnFamilySample {
       }
     }
 
-    // open DB with two column families
+    // open DB with two column families with different write buffer size
     final List<ColumnFamilyDescriptor> columnFamilyDescriptors =
         new ArrayList<>();
     // have to open default column family
-    columnFamilyDescriptors.add(new ColumnFamilyDescriptor(
-        RocksDB.DEFAULT_COLUMN_FAMILY, new ColumnFamilyOptions()));
+    columnFamilyDescriptors.add(new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY,
+        new ColumnFamilyOptions().setWriteBufferSize(8 * SizeUnit.MB)));
     // open the new one, too
     columnFamilyDescriptors.add(new ColumnFamilyDescriptor(
-        "new_cf".getBytes(), new ColumnFamilyOptions()));
+        "new_cf".getBytes(), new ColumnFamilyOptions().setWriteBufferSize(16 * SizeUnit.MB)));
     final List<ColumnFamilyHandle> columnFamilyHandles = new ArrayList<>();
     try(final DBOptions options = new DBOptions();
         final RocksDB db = RocksDB.open(options, db_path,
@@ -66,6 +66,42 @@ public class RocksDBColumnFamilySample {
           db.write(new WriteOptions(), wb);
         }
 
+      } finally {
+        for (final ColumnFamilyHandle handle : columnFamilyHandles) {
+          handle.close();
+        }
+      }
+    }
+    columnFamilyDescriptors.clear();
+    final Cache cache = new LRUCache(1 * SizeUnit.MB);
+    final TableFormatConfig conf = new BlockBasedTableConfig().setBlockCache(cache);
+    // have to open default column family
+    columnFamilyDescriptors.add(new ColumnFamilyDescriptor(
+        RocksDB.DEFAULT_COLUMN_FAMILY, new ColumnFamilyOptions().setTableFormatConfig(conf)));
+    // open the new one, too
+    columnFamilyDescriptors.add(new ColumnFamilyDescriptor(
+        "new_cf".getBytes(), new ColumnFamilyOptions().setTableFormatConfig(conf)));
+    columnFamilyHandles.clear();
+    try (
+        // cost write buffer size from all column families to the block cache shared by all column
+        // families
+        final WriteBufferManager manager = new WriteBufferManager(0l, cache);
+        final DBOptions options = new DBOptions().setWriteBufferManager(manager);
+        final RocksDB db =
+            RocksDB.open(options, db_path, columnFamilyDescriptors, columnFamilyHandles)) {
+      assert (db != null);
+      try {
+        db.put(
+            columnFamilyHandles.get(1), new WriteOptions(), "key".getBytes(), "value".getBytes());
+        db.put(
+                columnFamilyHandles.get(1), new WriteOptions(), "key1".getBytes(), "value".getBytes());
+        db.put(
+                columnFamilyHandles.get(1), new WriteOptions(), "key2".getBytes(), "value".getBytes());
+        db.put(
+                columnFamilyHandles.get(1), new WriteOptions(), "key3".getBytes(), "value".getBytes());
+        db.put(
+                columnFamilyHandles.get(1), new WriteOptions(), "key4".getBytes(), "value".getBytes());
+        System.out.print(cache.getUsage());
         // drop column family
         db.dropColumnFamily(columnFamilyHandles.get(1));
       } finally {
